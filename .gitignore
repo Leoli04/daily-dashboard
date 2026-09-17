@@ -1,0 +1,12 @@
+# ---- 快照 JSON ----
+# 构建时在工作区全新抓取，不入库：否则仓库会按每天数百 KB 线性膨胀。
+# data/ 目录本身不需要保留，tools/fetch-sources.js 用 mkdirSync(recursive) 自动创建。
+data/*.json
+
+# ---- 工具运行日志 ----
+# 每次运行都变，入库只会产生噪音。
+tools/_last-run.txt
+tools/_last-build.txt
+
+# ---- Pages 构建产物 ----
+dist/

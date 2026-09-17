@@ -1,0 +1,103 @@
+name: refresh-dashboard
+
+# 每日资讯看板 · 定时抓取 → 构建单文件产物 → 发布到 GitHub Pages
+#
+# 这个 workflow 负责什么（以及不负责什么）：
+#   页面打开时会由**浏览器直连 19 个数据源实时刷新**，所以「数据新不新」不靠这里。
+#   这里刷新的是**内置快照** —— 断网 / 接口全挂时的兜底，以及「百度热搜」这类
+#   浏览器拿不到的源的唯一来源（该源无 CORS 头，只能由 Node 抓）。
+#
+# 两个必须知道的坑：
+#   1) 时区。工具用运行时本地时区判定「今天」；runner 是 UTC，北京时间 00:00–08:00 之间
+#      会把快照标成前一天。下面显式设 TZ=Asia/Shanghai 解决，不动代码。
+#   2) 60 天保活。公开仓库的 scheduled workflow 连续 60 天无提交活动会被自动停用；
+#      产物走 artifact 发布、不回写仓库，所以仓库平时毫无活动 → 每月 1 号补一次保活提交。
+
+on:
+  schedule:
+    # cron 一律按 UTC 写，下面两条已换算成北京时间：
+    - cron: '30 0,12 * * *' # 北京时间 08:30 与 20:30，各跑一次
+    - cron: '0 4 1 * *'     # 每月 1 号北京时间 12:00，只跑保活提交
+  workflow_dispatch:        # 支持在 Actions 页面手动触发
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: refresh-dashboard
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # 保活那一趟不重复构建
+    if: github.event_name != 'schedule' || github.event.schedule != '0 4 1 * *'
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 抓取脚本对「个别源失败」是**非致命**的（失败项记进 payload.fetch.failures 后仍以 0 退出），
+      # 所以不能只看退出码 —— 用 snapshot-gate 当闸门：不健康就让本 job 失败，deploy 不执行，
+      # Pages 继续供应上一次的好版本，而不是把残缺快照发出去。
+      - name: 抓取数据源（不健康则重试，最多 3 次）
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            if node tools/fetch-sources.js && node tools/snapshot-gate.js; then
+              echo "抓取 + 闸门通过（第 ${i} 次）"
+              exit 0
+            fi
+            echo "第 ${i} 次未通过，清掉本地快照后重试"
+            rm -f data/*.json
+            sleep 20
+          done
+          echo "三次都未通过，放弃发布"
+          exit 1
+
+      - name: 构建单文件产物
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          node tools/build.js --out=dist/index.html
+          ls -l dist
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  keepalive:
+    if: github.event_name == 'schedule' && github.event.schedule == '0 4 1 * *'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 保活提交（避免 scheduled workflow 因 60 天无活动被停用）
+        run: |
+          set -euo pipefail
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/keepalive.txt
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/keepalive.txt
+          git diff --cached --quiet || git commit -m "chore: monthly keepalive"
+          git push

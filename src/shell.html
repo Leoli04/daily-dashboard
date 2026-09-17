@@ -1,0 +1,59 @@
+<div class="topbar">
+  <div class="topbar-in">
+    <div class="brand">
+      <span class="zh">每日资讯看板</span>
+      <span class="en">DAILY&nbsp;BRIEF</span>
+      <span class="edition" id="editionBadge" title="当前版块的数据日期">{{EDITION}}</span>
+    </div>
+    <div class="tabs" id="tabs" role="tablist" aria-label="版块切换">
+      <button type="button" role="tab" id="tab-aidyn" data-pane="aidyn" data-key="1" aria-selected="true" style="--tc:var(--t1)"><span class="dot"></span>AI 动态</button>
+      <button type="button" role="tab" id="tab-market" data-pane="market" data-key="2" aria-selected="false" style="--tc:var(--t5)"><span class="dot"></span>财经市场</button>
+      <button type="button" role="tab" id="tab-hotlist" data-pane="hotlist" data-key="3" aria-selected="false" style="--tc:var(--t3)"><span class="dot"></span>实时热搜<span class="cnt" data-cnt="hotlist">—</span></button>
+    </div>
+    <div class="topmeta" title="页面构建于 {{BUILT_AT_BJ}}">
+      <span class="lab">数据日期</span>
+      <span class="val" id="dataDate">—</span>
+      <span class="lab sep">更新于</span>
+      <span class="val val2" id="updatedAt">—</span>
+      <span id="srcPill" class="pill snap"><i></i>内置快照</span>
+      <button class="btn" id="refreshBtn" type="button" title="忽略当日缓存，重新从数据源拉取">刷新数据</button>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+  <!-- AI 动态 = 一级分组 tab：当日（官方日报精选）/ 近 7 日（同一提供方的条目流，投影版块）。
+       两者本属同一份载荷（aihot.items7d），放在同一个 tab 下按时间范围切分。 -->
+  <section id="pane-aidyn" class="pane" role="tabpanel" aria-labelledby="tab-aidyn">
+    <div class="subtabs" data-group="aidyn" role="tablist" aria-label="AI 动态子版块">
+      <button type="button" role="tab" id="stab-aihot" data-sub="aihot" aria-selected="true" style="--tc:var(--t1)"><span class="dot"></span>当日<span class="cnt" data-cnt="aihot">—</span></button>
+      <button type="button" role="tab" id="stab-ai7d" data-sub="ai7d" aria-selected="false" style="--tc:var(--t1)"><span class="dot"></span>近 7 日<span class="cnt" data-cnt="ai7d">—</span></button>
+    </div>
+    <section id="pane-aihot" class="subpane" role="tabpanel" aria-labelledby="stab-aihot"></section>
+    <section id="pane-ai7d" class="subpane hide" role="tabpanel" aria-labelledby="stab-ai7d"></section>
+  </section>
+
+  <!-- 财经市场 = 一级分组 tab（原「今日财经要闻」并入这里，与 A股盘面的三个子版块并列），内部再分子 tab -->
+  <section id="pane-market" class="pane hide" role="tabpanel" aria-labelledby="tab-market">
+    <div class="subtabs" data-group="market" role="tablist" aria-label="财经市场子版块">
+      <button type="button" role="tab" id="stab-hk" data-sub="hk" aria-selected="true" style="--tc:var(--t5)"><span class="dot"></span>今日要闻<span class="cnt" data-cnt="hk">—</span></button>
+      <button type="button" role="tab" id="stab-astock" data-sub="astock" aria-selected="false" style="--tc:var(--t2)"><span class="dot"></span>市场情绪<span class="cnt" data-cnt="astock">—</span></button>
+      <button type="button" role="tab" id="stab-radar" data-sub="radar" aria-selected="false" style="--tc:var(--t4)"><span class="dot"></span>风险雷达<span class="cnt" data-cnt="radar">—</span></button>
+      <button type="button" role="tab" id="stab-astkday" data-sub="astkday" aria-selected="false" style="--tc:var(--t3)"><span class="dot"></span>人气榜 · 日榜<span class="cnt" data-cnt="astkday">—</span></button>
+    </div>
+    <section id="pane-hk" class="subpane" role="tabpanel" aria-labelledby="stab-hk"></section>
+    <section id="pane-astock" class="subpane hide" role="tabpanel" aria-labelledby="stab-astock"></section>
+    <section id="pane-radar" class="subpane hide" role="tabpanel" aria-labelledby="stab-radar"></section>
+    <section id="pane-astkday" class="subpane hide" role="tabpanel" aria-labelledby="stab-astkday"></section>
+  </section>
+
+  <section id="pane-hotlist" class="pane hide" role="tabpanel" aria-labelledby="tab-hotlist"></section>
+
+  <footer>
+    <div class="fl single">
+      <span class="srcnote"><b>数据来源:</b>公共接口数据抓取</span>
+      <span class="fver"><b>版本:</b> <span class="mono">v{{VERSION}}</span></span>
+    </div>
+    <div class="warn" id="riskWarn">⚠ 本页数据由公开接口自动抓取与计算，仅供研究参考，不构成任何投资建议。市场有风险，入市需谨慎。</div>
+  </footer>
+</div>

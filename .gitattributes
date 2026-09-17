@@ -1,0 +1,8 @@
+# 统一行尾：源码一律 LF，保证跨平台一致、diff 无噪音
+* text=auto eol=lf
+
+# .cmd / .bat 必须 CRLF：LF 行尾的批处理在 cmd.exe 下可能解析异常
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+*.png binary
