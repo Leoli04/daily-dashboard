@@ -73,7 +73,13 @@ node tools/verify/probe.js      # 通用探针：任意宽度与页签下执行�
 
 ## 自动化
 
-`.github/workflows/refresh.yml`，北京时间每天两次（08:30 / 20:30）：抓取 → 构建 → 发布到 GitHub Pages。
+`.github/workflows/refresh.yml`：抓取 → 构建 → 发布到 GitHub Pages。**三种触发方式**：
+
+| 触发 | 时机 |
+|---|---|
+| `push` | 推送到 `main` 即部署一次（首次上线不用等定时任务；保活提交除外，见 `paths-ignore`） |
+| `schedule` | 北京时间每天两次 08:30 / 20:30；另有每月 1 号 12:00 只跑保活 |
+| `workflow_dispatch` | 手动：repo → Actions → 左侧 `refresh-dashboard` → **Run workflow** |
 
 它**不决定页面打开时的实时性**（那由浏览器直连决定），刷新的只是：
 

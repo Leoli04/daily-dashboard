@@ -14,11 +14,18 @@ name: refresh-dashboard
 #      产物走 artifact 发布、不回写仓库，所以仓库平时毫无活动 → 每月 1 号补一次保活提交。
 
 on:
+  # 推送到 main 即部署一次：既让首次上线不用等定时任务，也让日后的改动自动生效。
+  # paths-ignore 排除保活提交，否则每月保活会白跑一趟完整构建。
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/keepalive.txt'
   schedule:
     # cron 一律按 UTC 写，下面两条已换算成北京时间：
     - cron: '30 0,12 * * *' # 北京时间 08:30 与 20:30，各跑一次
     - cron: '0 4 1 * *'     # 每月 1 号北京时间 12:00，只跑保活提交
   workflow_dispatch:        # 支持在 Actions 页面手动触发
+                            #（repo → Actions → 左侧 refresh-dashboard → Run workflow）
 
 permissions:
   contents: read
