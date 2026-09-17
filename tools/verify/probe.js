@@ -25,7 +25,11 @@ const subArg = (args.find((a) => a.startsWith('--sub=')) || '').split('=')[1];
 const settleArg = Number((args.find((a) => a.startsWith('--settle=')) || '').split('=')[1] || 0);
 const OFFLINE = args.indexOf('--offline') >= 0;
 
-const PAGE = pageArg ? path.resolve(pageArg) : path.resolve(ROOT, '..', '每日资讯看板.html');
+/* --page 可以是本地 HTML（相对/绝对路径），也可以直接给 http(s) URL（用于验证线上站点） */
+const PAGE = pageArg
+  ? (/^https?:\/\//.test(pageArg) ? pageArg : path.resolve(pageArg))
+  : path.resolve(ROOT, '..', '每日资讯看板.html');
+const NAV = /^https?:\/\//.test(PAGE) ? PAGE : 'file:///' + PAGE.replace(/\\/g, '/');
 const WIDTH = 1400;
 
 const CANDIDATES = [
@@ -95,7 +99,7 @@ class CDP {
     const errors = [];
     cdp.on('Runtime.exceptionThrown', (p) => errors.push(String(p.exceptionDetails && p.exceptionDetails.text)));
     const loaded = cdp.once('Page.loadEventFired');
-    await cdp.send('Page.navigate', { url: 'file:///' + PAGE.replace(/\\/g, '/') });
+    await cdp.send('Page.navigate', { url: NAV });
     await loaded;
     /* 等实时数据落地；断网时等它转成快照态 */
     await cdp.eval(`(async () => { const until = Date.now() + 20000; while (Date.now() < until) { const p = document.getElementById('srcPill'); if (p && p.textContent.indexOf('快照') < 0) return 'ok'; await new Promise(r=>setTimeout(r,300)); } return 'timeout'; })()`);
