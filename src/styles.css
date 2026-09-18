@@ -375,3 +375,19 @@ footer a:hover{text-decoration:underline}
   .tabs button{padding:7px 11px;font-size:12px}
 }
 @media print{ body{background:#fff;color:#000} .topbar{position:static} }
+
+/* ====================== 人气榜 · 日/周榜与人气趋势弹层 ====================== */
+/* 条目行可悬浮/点击呼出趋势弹层 */
+.entry[data-code]{cursor:pointer}
+.heatpop{
+  position:fixed; z-index:80; width:330px; max-width:calc(100vw - 24px);
+  background:var(--panel3); border:1px solid var(--line2); border-radius:10px;
+  padding:10px 12px 8px; box-shadow:0 10px 32px rgba(0,0,0,.55);
+}
+.heatpop .hp-h{display:flex;align-items:baseline;gap:8px;font-size:12.5px;font-weight:800}
+.heatpop .hp-h .hp-code{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;font-weight:600;color:var(--dim)}
+.heatpop .hp-h .hp-span{margin-left:auto;font-family:ui-monospace,Menlo,monospace;font-size:10px;font-weight:600;color:var(--dim)}
+.heatpop svg{display:block;margin-top:6px;width:100%}
+.heatpop .hp-f{display:flex;justify-content:space-between;font-family:ui-monospace,Menlo,monospace;font-size:10px;color:var(--dim);margin-top:2px}
+.heatpop .hp-f b{color:var(--gold);font-weight:700}
+.heatpop .hp-empty{color:var(--dim);font-size:11.5px;padding:6px 2px 8px}

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 真实浏览器验证：渲染 / 四个一级 tab + A股盘面三个子版块 / 更新时间 / 当日缓存不重复拉取 / 页面异常 / 截图
+ * 真实浏览器验证：渲染 / 两个一级 tab + 财经市场四个子版块 / 更新时间 / 当日缓存不重复拉取 / 页面异常 / 截图
  * file:// 打开 + 普通 Chrome UA（CDN 按 UA 拦截 headless，必须覆盖）
  */
 const fs = require('fs');
@@ -86,7 +86,7 @@ const PROBE = `(() => {
   const qa = (s) => Array.from(document.querySelectorAll(s));
   const txt = (e) => e ? e.textContent.trim().replace(/\\s+/g, ' ') : '';
   const host = (h) => { try { return new URL(h).host; } catch (e) { return '?'; } };
-  const panes = ['aidyn','aihot','ai7d','astock','hk','hotlist','radar','astkday','market'];
+  const panes = ['aidyn','aihot','ai7d','astock','hk','radar','astkday','market'];
   /* 两个时间各司其职：dataDate = 当前版块的数据日期（随 tab 变），updatedAt = 抓取时刻。
      badge 是标题旁日期徽标，必须与 dataDate 同值（同一渲染源 updateChrome 写入）。 */
   const out = { url: location.href, pill: txt(q('#srcPill')), dataDate: txt(q('#dataDate')),
@@ -128,7 +128,7 @@ const PROBE = `(() => {
     hotLinkTexts: qa('#pane-aihot a[href*="aihot"]').map(txt),
     linkRowTexts: qa('#pane-aihot .card-links a').map(txt),
     titleHosts: qa('#pane-aihot .card-title a').map(a => host(a.href)),
-    /* 近 7 日条目流已独立成一级 tab：分组、条数、筛选条、首条时间与来源 */
+    /* 近 7 日条目流已并入 AI 动态：分组、条数、筛选条、首条时间与来源 */
     d7: {
       segs: qa('#pane-ai7d #ai7dSeg button').map(txt),
       groups: qa('#pane-ai7d .newsgrp[data-agrp]').map(g => g.dataset.agrp + '=' + g.querySelectorAll('details.news').length),
@@ -163,29 +163,25 @@ const PROBE = `(() => {
     firstLhb: a.querySelector('table tbody tr') ? a.querySelector('table tbody tr').innerText.trim().replace(/\\s+/g,' ') : '',
     maxBoard: (a.innerText.match(/最高 (\\d+) 连板/) || [])[1] || ''
   };
-  // 热搜专项（小时榜与日榜都已不在本版块：前者不再上屏，后者搬去财经市场）
-  const h = document.getElementById('pane-hotlist');
-  const hw = h.querySelector('#seg-web');
-  out.hotlist = {
-    segs: qa('#hotSeg button').map(txt),
-    segsOn: qa('#hotSeg button.on').map(txt),
-    firstEntry: hw && hw.querySelector('.entry') ? hw.querySelector('.entry').innerText.trim().replace(/\\s+/g,' ').slice(0,90) : '',
-    entryCount: hw ? hw.querySelectorAll('.entry').length : 0,
-    hourSegExists: !!h.querySelector('#seg-hour'),
-    daySegExists: !!h.querySelector('#seg-day'),
-    hourWordInText: h.innerText.indexOf('小时榜') >= 0
-  };
-  // A股盘面 · 人气榜日榜专项（由热搜版块的日榜投影而来）
+  // A股盘面 · 人气榜日/周榜专项（由热搜数据版块的日榜 + 逐日归档投影而来）
   const ad = document.getElementById('pane-astkday');
+  const segDay = document.getElementById('seg-day');
+  const segWeek = document.getElementById('seg-week');
   out.astkday = {
-    h2: txt(ad.querySelector('h2')),
-    note: txt(ad.querySelector('.note')),
-    entries: ad.querySelectorAll('.entry').length,
-    first: txt(ad.querySelector('.entry .hl')),
-    rank1: txt(ad.querySelector('.entry .rk .no')),
-    heat1: txt(ad.querySelector('.entry .idx .val')),
-    hint: txt(ad.querySelector('.hint')),
-    isEmptyState: !!ad.querySelector('.empty')
+    h2s: qa('#pane-astkday section.sec h2').map(txt),
+    notes: qa('#pane-astkday section.sec .note').map(txt),
+    segs: qa('#astkSeg button').map(txt),
+    segsOn: qa('#astkSeg button.on').map(txt),
+    dayEntries: segDay ? segDay.querySelectorAll('.entry').length : 0,
+    weekEntries: segWeek ? segWeek.querySelectorAll('.entry').length : 0,
+    rowsCoded: ad.querySelectorAll('.entry[data-code]').length,
+    weekFirst: segWeek && segWeek.querySelector('.entry') ? segWeek.querySelector('.entry').innerText.trim().replace(/\\s+/g,' ').slice(0, 90) : '',
+    first: txt(ad.querySelector('#seg-day .entry .hl')),
+    rank1: txt(ad.querySelector('#seg-day .entry .rk .no')),
+    heat1: txt(ad.querySelector('#seg-day .entry .idx .val')),
+    hint: txt(ad.querySelector('.panel.hint')),
+    isEmptyState: !!ad.querySelector('.empty'),
+    oldHotlistSegGone: !document.getElementById('hotSeg')
   };
   // 雷达专项
   const r = document.getElementById('pane-radar');
@@ -272,14 +268,12 @@ const PROBE = `(() => {
     log.push('  A股 banner   = ' + p.astock.banner);
     log.push('  A股 表格行数 = ' + p.astock.lhbRows + '  首行: ' + p.astock.firstLhb);
     log.push('  A股 最高连板 = ' + p.astock.maxBoard);
-    log.push('  热搜 分段    = ' + JSON.stringify(p.hotlist.segs) + '  选中=' + JSON.stringify(p.hotlist.segsOn)
-      + '  全网热搜条目=' + p.hotlist.entryCount);
-    log.push('  热搜 旧段      = hour段存在=' + p.hotlist.hourSegExists + ' 日段存在=' + p.hotlist.daySegExists
-      + '（都应 false）  正文含「小时榜」=' + p.hotlist.hourWordInText);
-    log.push('  热搜 首条    = ' + p.hotlist.firstEntry);
-    log.push('  人气榜日榜   = ' + p.astkday.h2 + ' / ' + p.astkday.note + '  条目=' + p.astkday.entries
-      + '  空态=' + p.astkday.isEmptyState);
+    log.push('  人气榜 分段   = ' + JSON.stringify(p.astkday.segs) + '  选中=' + JSON.stringify(p.astkday.segsOn)
+      + '  日榜条目=' + p.astkday.dayEntries + '  周榜条目=' + p.astkday.weekEntries
+      + '  带码条目=' + p.astkday.rowsCoded);
+    log.push('  人气榜 版块   = ' + JSON.stringify(p.astkday.h2s));
     log.push('  日榜 首行    = ' + p.astkday.rank1 + ' ' + p.astkday.first + '  热度=' + p.astkday.heat1);
+    log.push('  周榜 首行    = ' + p.astkday.weekFirst);
     log.push('  雷达 总体    = ' + p.radar.overall + ' (' + p.radar.level + ')  ' + p.radar.headline);
     log.push('  雷达 分项    = ' + JSON.stringify(p.radar.scores));
     log.push('  雷达 观察/规则 = ' + p.radar.watch + ' / ' + p.radar.rules);
@@ -289,7 +283,7 @@ const PROBE = `(() => {
 
     log.push('');
     log.push('==================== tab 切换（一级顺序 + 两个分组 tab 各自的子 tab）');
-    const TOPSEQ = ['aidyn', 'market', 'hotlist'];
+    const TOPSEQ = ['aidyn', 'market'];
     const SUBS = ['hk', 'astock', 'radar', 'astkday'];
     const AIDYN_SUBS = ['aihot', 'ai7d'];
     /* 分组 tab 的子 tab 清单：一级 key -> 子 key 列表（非分组 tab 不在表里） */
@@ -345,26 +339,61 @@ const PROBE = `(() => {
     log.push('  徽标同源判定   = ' + (badBadge.length ? '❌ ' + badBadge.join(',') : '✅ 全部与顶部同值'));
 
     log.push('');
-    log.push('==================== 热搜分段（只剩真实存在的那一段，分段条外观保留）');
-    /* 必须先把热搜 tab 切回可见态，否则 getBoundingClientRect 全为 0（隐藏元素无布局） */
-    await cdp.eval(`document.querySelector('#tabs button[data-pane="hotlist"]').click()`);
+    log.push('==================== 财经市场 · 人气榜（日/周榜切换 + 趋势弹层）');
+    /* 必须先把版块切回可见态，否则 getBoundingClientRect 全为 0（隐藏元素无布局） */
+    await cdp.eval(`document.querySelector('#tabs button[data-pane="market"]').click()`);
+    await sleep(200);
+    await cdp.eval(`document.querySelector('.subtabs[data-group="market"] button[data-sub="astkday"]').click()`);
     await sleep(450);
     log.push('  分段探针      = ' + await cdp.eval(`(() => {
-      const bar = document.getElementById('hotSeg');
+      const bar = document.getElementById('astkSeg');
       const btns = Array.from(bar.querySelectorAll('button'));
-      const segs = ['hour','day','web'];
-      const visNow = segs.filter(x => document.getElementById('seg-'+x) && !document.getElementById('seg-'+x).classList.contains('hide'));
-      btns[0].click();   /* 单段时点击不应改变视图，也不应报错 */
-      const visAfter = segs.filter(x => document.getElementById('seg-'+x) && !document.getElementById('seg-'+x).classList.contains('hide'));
-      const ex = document.getElementById('seg-web');
+      const visNow = ['day','week'].filter(x => document.getElementById('seg-'+x) && !document.getElementById('seg-'+x).classList.contains('hide'));
+      btns[1].click();   /* 切到周榜 */
+      const visWeek = ['day','week'].filter(x => document.getElementById('seg-'+x) && !document.getElementById('seg-'+x).classList.contains('hide'));
+      const wEntries = document.getElementById('seg-week').querySelectorAll('.entry').length;
+      const wFirst = document.querySelector('#seg-week .entry') ? document.querySelector('#seg-week .entry').innerText.trim().replace(/\\s+/g,' ').slice(0,80) : '';
+      btns[0].click();   /* 切回日榜 */
+      const visDay = ['day','week'].filter(x => document.getElementById('seg-'+x) && !document.getElementById('seg-'+x).classList.contains('hide'));
       return JSON.stringify({ segButtons: btns.map(b => b.textContent.trim()),
-        visible: visNow, visibleAfterClick: visAfter,
-        entries: ex ? ex.querySelectorAll('.entry').length : 0,
-        first: ex && ex.querySelector('.entry') ? ex.querySelector('.entry').innerText.trim().replace(/\\s+/g,' ').slice(0,80) : '',
-        btnW: Math.round(btns[0].getBoundingClientRect().width), barW: Math.round(bar.getBoundingClientRect().width),
-        notStretched: Math.round(btns[0].getBoundingClientRect().width) < Math.round(bar.getBoundingClientRect().width) });
+        visibleOnLoad: visNow, visibleAfterWeek: visWeek, weekEntries: wEntries, weekFirst: wFirst, visibleBackToDay: visDay });
     })()`));
-    await cdp.shot(path.join(TMP, 'tab-hotlist.png'), true);
+    await cdp.shot(path.join(TMP, 'tab-astkday.png'), true);
+    /* 弹层：切到周榜后点击首行（趋势数据源自归档，周榜个股一定在归档里） */
+    log.push('  趋势弹层      = ' + await cdp.eval(`(async () => {
+      const out = {};
+      const pane = document.getElementById('pane-astkday');
+      document.querySelector('#astkSeg button[data-kseg="week"]').click();
+      await new Promise(r => setTimeout(r, 120));
+      const row = document.querySelector('#seg-week .entry[data-code]');
+      if (!row) return JSON.stringify({ error: 'NO-ROW' });
+      row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 120));
+      const pop = document.getElementById('heatPop');
+      out.hoverShown = !!pop && !pop.classList.contains('hide');
+      out.hoverHasSvg = !!pop && !!pop.querySelector('svg');
+      out.hoverText = pop ? pop.innerText.trim().replace(/\\s+/g, ' ').slice(0, 80) : '';
+      out.popInViewport = !!pop && pop.getBoundingClientRect().left >= 0 && pop.getBoundingClientRect().top >= 0;
+      /* 点击固定：鼠标移开后弹层仍在；再点同一行 → 收起 */
+      row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 80));
+      out.pinned = !!pop && pop.classList.contains('pin');
+      pane.dispatchEvent(new MouseEvent('mouseleave'));
+      await new Promise(r => setTimeout(r, 80));
+      out.staysAfterLeave = !!pop && !pop.classList.contains('hide');
+      row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 80));
+      out.closedBySecondClick = !!pop && pop.classList.contains('hide');
+      /* 悬浮态在鼠标移开后应收起 */
+      row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 60));
+      pane.dispatchEvent(new MouseEvent('mouseleave'));
+      await new Promise(r => setTimeout(r, 60));
+      out.hoverClosedByLeave = pop.classList.contains('hide');
+      document.querySelector('#astkSeg button[data-kseg="day"]').click();
+      return JSON.stringify(out);
+    })()`));
+    await cdp.shot(path.join(TMP, 'astkday-popup.png'), false);
 
     log.push('');
     log.push('==================== 财经市场 · 今日要闻（实时行情 + 当天财经快讯；结构信号表须已移除）');
@@ -472,18 +501,20 @@ const PROBE = `(() => {
     log.push('  AI 序号      = ' + p2.ai.idxSeq);
     log.push('  A股 数据条   = ' + JSON.stringify(p2.astock.strip));
     log.push('  A股 表格行数 = ' + p2.astock.lhbRows);
-    log.push('  热搜 分段    = ' + JSON.stringify(p2.hotlist.segs));
+    log.push('  人气榜 分段   = ' + JSON.stringify(p2.astkday.segs) + '  日/周=' + p2.astkday.dayEntries + '/' + p2.astkday.weekEntries);
     log.push('  雷达 总体    = ' + p2.radar.overall + ' (' + p2.radar.level + ')');
     log.push('  数据日期/更新于 = ' + p2.dataDate + ' / ' + p2.updatedAt);
     log.push('  页面异常     = ' + (errors.length ? errors.join(' | ') : '无'));
     log.push('  缓存加载后各 tab 渲染完整性:');
-    for (const k of ['aihot', 'astock', 'hk', 'hotlist', 'astkday', 'radar']) {
+    for (const k of ['aihot', 'astock', 'hk', 'astkday', 'radar']) {
       log.push('    ' + k + ' 文本=' + p2.panes[k].textLen + ' 表格=' + p2.panes[k].tables + ' svg=' + p2.panes[k].svgs + ' 卡片=' + p2.panes[k].cards + ' 条目=' + p2.panes[k].entries);
     }
 
     log.push('');
     log.push('==================== localStorage 缓存内容');
     const ls = await cdp.eval(`(() => { const s = localStorage.getItem('mb.cache.v2'); if(!s) return 'NONE'; const o = JSON.parse(s); return JSON.stringify({ cacheDate: o.cacheDate, at: o.at, tabs: Object.keys(o.tabs), bytes: s.length, hotlistHasSegments: !!(o.tabs.hotlist && o.tabs.hotlist.segments),
+      hotlistArchiveDays: o.tabs.hotlist && Array.isArray(o.tabs.hotlist.heatArchive) ? o.tabs.hotlist.heatArchive.length : 0,
+      localArchiveDays: (() => { try { const a = JSON.parse(localStorage.getItem('mb.heat.v1') || '[]'); return Array.isArray(a) ? a.length : 0; } catch (e) { return 0; } })(),
       /* 投影版块（astkday）不应写进缓存，否则等于存了第二份真源 */
       derivedLeaked: Object.keys(o.tabs).filter(k => k === 'astkday') }); })()`);
     log.push('  ' + ls);
@@ -502,7 +533,8 @@ const PROBE = `(() => {
     log.push('  tab 角标     = ' + JSON.stringify(p3.tabCounts));
     log.push('  AI 序号      = ' + p3.ai.idxSeq);
     log.push('  AI 版块      = ' + JSON.stringify(p3.ai.sections));
-    for (const k of ['aihot', 'astock', 'hk', 'hotlist', 'astkday', 'radar']) {
+    log.push('  人气榜 分段   = ' + JSON.stringify(p3.astkday.segs) + '  日/周=' + p3.astkday.dayEntries + '/' + p3.astkday.weekEntries);
+    for (const k of ['aihot', 'astock', 'hk', 'astkday', 'radar']) {
       log.push('    ' + k + ' 文本=' + p3.panes[k].textLen + ' 表格=' + p3.panes[k].tables + ' svg=' + p3.panes[k].svgs + ' 卡片=' + p3.panes[k].cards + ' 条目=' + p3.panes[k].entries);
     }
     log.push('  横向溢出     = ' + p3.overflowX);

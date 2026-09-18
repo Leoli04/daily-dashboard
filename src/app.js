@@ -5,13 +5,15 @@
  *   L1 localStorage 当日缓存           → 同一天内不重新拉取
  *   L2 浏览器实时拉取（CORS 可用源）   → 刷新后回写 L1
  *   L3 单位置降级                       → 某源失败则该 tab 退回上一可用数据
- * 浏览器拉不到的源（如百度热搜）只能来自 L0 快照，不随刷新变化。
  * ==========================================================================*/
 (function () {
   'use strict';
   var U = MB.utils;
   var esc = U.esc;
   var CACHE_KEY = 'mb.cache.v2';
+  /* 人气榜逐日归档的页面侧累积键：与内置快照归档取并集后供周榜/趋势取数。
+     看得越勤样本越全；构建侧则沉淀在 data/heat-archive.json（随仓库提交）。 */
+  var ARCHIVE_KEY = 'mb.heat.v1';
 
   /* ------------------------------------------------------------ 运行状态 */
   var STATE = {
@@ -61,6 +63,26 @@
     return o;
   }
 
+  /* -------------------------------------------- 人气榜归档的页面侧读写 */
+  function readLocalArchive() {
+    try {
+      var a = JSON.parse(localStorage.getItem(ARCHIVE_KEY) || '[]');
+      return Array.isArray(a) ? a : [];
+    } catch (e) { return []; }
+  }
+  function writeLocalArchive(arch) {
+    try { localStorage.setItem(ARCHIVE_KEY, JSON.stringify(arch || [])); } catch (e) { /* 存储满时静默：归档下次还会重建 */ }
+  }
+  /* 归档并集：内置快照里带着构建时的归档，当前载荷（缓存/实时）里的归档可能更新也可能更旧，
+     两边合并（同日以当前载荷为准）—— 周榜与趋势的样本越多越准，合并本身无副作用。 */
+  function patchArchive() {
+    var cur = STATE.tabs.hotlist && STATE.tabs.hotlist.data;
+    var snapArch = STATE.snapshot && STATE.snapshot.tabs && STATE.snapshot.tabs.hotlist && STATE.snapshot.tabs.hotlist.heatArchive;
+    if (cur && Array.isArray(snapArch) && snapArch.length) {
+      cur.heatArchive = MB.mergeHeatArchive(snapArch, cur.heatArchive || []);
+    }
+  }
+
   /* ------------------------------------------------------------ 取数工具 */
   /* 主域名整段拦截时依次退到同族备用域名（改一个主机名、路径与字段不变）。
      只在「fetch 被 reject」（网络 / CORS 类故障）时换域名；HTTP 状态码错误属于语义错误，换了也没用。 */
@@ -79,12 +101,15 @@
     throw lastErr;
   }
 
-  /* 完整实时拉取（与 tools/fetch-sources.js 同构，仅限浏览器可直连源） */
-  async function fetchAll() {
+  /* 完整实时拉取（与 tools/fetch-sources.js 同构，仅限浏览器可直连源）。
+     prevArchive：页面侧已积累的人气榜逐日归档（localStorage + 内置快照的并集），
+     供 derive 时把今天的日榜并进去 —— 周榜与趋势的时间序列就是这样在页面侧长出来的。 */
+  async function fetchAll(prevArchive) {
     var today = U.localDateStr();
     var ctx = {
       today: today, tradeDate: today, tradeDate8: today.replace(/-/g, ''),
-      baselineDates: [], baselineDate8: '', builtAt: U.nowIso()
+      baselineDates: [], baselineDate8: '', builtAt: U.nowIso(),
+      prevArchive: prevArchive || []
     };
     var raw = {}, fails = [];
     async function run(tasks) {
@@ -291,7 +316,7 @@
       + '</div></details>';
   }
 
-  /* ============================================== 一级 tab「A股盘面」· 子 tab 1 · 市场情绪 */
+  /* ============================================== 财经市场 · 市场情绪 */
   function renderAstock(d, meta) {
     var b = d.breadth || {}, lhb = d.lhb || {}, lu = d.limitUp || {}, ind = d.industries || {}, con = d.concepts || {};
     var m = d.margin || {};
@@ -411,81 +436,189 @@
     return html;
   }
 
-  /* 热股榜条目列表：原属热搜版块，随「A股人气榜 · 日榜」一起搬到 A股盘面 */
+  /* 热股榜条目列表：日榜（ analyse 归因摘要）与周榜（ daysTxt 在榜天数）共用一套行结构，
+     每行带 data-code，供人气趋势弹层定位个股。 */
   function maxHeat(arr) { return Math.max.apply(null, arr.map(function (x) { return x.heat || 0; }).concat([1])); }
 
-  function stockRows(arr) {
+  function stockRows(arr, capLabel) {
     if (!arr.length) return '<div class="panel"><div class="empty">暂无数据</div></div>';
     var mx = maxHeat(arr);
+    var cap = capLabel || '热度指数';
     return '<div class="entries">' + arr.slice(0, 30).map(function (x, i) {
       var pct = Math.max(6, Math.round((x.heat || 0) / mx * 100));
       var chgTag = x.chgRank ? (x.chgRank > 0 ? pctTag(1, '↑' + x.chgRank) : pctTag(-1, '↓' + Math.abs(x.chgRank))) : '';
-      return '<div class="entry' + (i < 3 ? ' top' : '') + '">'
+      var dek = x.analyse || x.daysTxt || '';
+      return '<div class="entry' + (i < 3 ? ' top' : '') + '" data-code="' + esc(x.code) + '">'
         + '<div class="rk"><div class="no">' + U.pad2(x.rank) + '</div><div class="src">' + esc(x.code) + '</div></div>'
         + '<div class="body">'
         + '<div class="hl">' + esc(x.name) + chgTag + (x.title ? '<span class="tagpill up" style="background:rgba(224,169,74,.18);color:var(--gold)">' + esc(x.title) + '</span>' : '') + '</div>'
-        + '<div class="dek' + (x.analyse ? '' : ' empty') + '">' + esc(x.analyse || '暂无归因摘要') + '</div>'
+        + '<div class="dek' + (dek ? '' : ' empty') + '">' + esc(dek || '暂无归因摘要') + '</div>'
         + '</div>'
-        + '<div class="idx"><div class="val">' + esc(x.heatTxt) + '</div><div class="cap">热度指数</div>'
+        + '<div class="idx"><div class="val">' + esc(x.heatTxt) + '</div><div class="cap">' + esc(cap) + '</div>'
         + '<div class="bar"><i style="width:' + pct + '%"></i></div></div>'
         + '</div>';
     }).join('') + '</div>';
   }
 
-  /* ======================================================== Tab 3 · 热搜
-     本版块只上屏百度热搜（构建时快照）。同花顺热股榜只剩日榜上屏，且移到
-     「A股盘面 · 人气榜 · 日榜」子版块；另一条短周期粒度榜不再展示，但其数据
-     仍在载荷里 —— 风险雷达的「热度」维度要用它算集中度。 */
-  function renderHotlist(d, meta) {
-    var w = (d.segments && d.segments.web) || { items: [] };
-    var html = '';
+  /* ========================================== 财经市场 · 人气榜 日/周榜（子 tab）
+     数据不是独立抓取的源，而是「热搜数据版块日榜 + 逐日归档」的投影（见 DERIVED / syncDerived），
+     故本版块不单独入库 —— 真源只有一份。周榜与趋势均由逐日归档（heatArchive）派生：
+     官方渠道没有周榜端点（同花顺/东财全系数探测确认），自建口径已在页面如实标注。 */
+  function renderAstkDay(d, meta) {
+    var arr = (d && d.entries) || [];
+    var wk = (d && d.week) || { entries: [], days: 0, dates: [] };
+    var html = '<div class="segbar" id="astkSeg">'
+      + '<button type="button" data-kseg="day" class="on">日榜 · 当日累计人气</button>'
+      + '<button type="button" data-kseg="week">周榜 · 近 ' + (wk.days || 0) + ' 个数据日</button>'
+      + '</div>'
+      + '<div id="seg-day">';
 
-    /* 只剩一个分段也保留分段条：与「全部要闻」的维度筛选同一交互外观，
-       日后往这里加榜不必改结构。单按钮由 :only-child 收窄，不铺满整行。 */
-    html += '<div class="segbar" id="hotSeg">'
-      + '<button type="button" data-seg="web" class="on">全网热搜 · 百度</button>'
-      + '</div>';
+    var dayTip = arr.length
+      ? ('A股人气榜：同花顺热股榜，展示名次按接口返回顺序 01–' + U.pad2(arr.length) + ' 连续编号；热度指数为接口原始热度值。悬浮或点击任意条目可查看该股的人气趋势。')
+      : '';
+    html += '<section class="sec" id="sec-astk-day">'
+      + '<div class="sec-h"><span class="bar" style="background:var(--t3)"></span><h2>A股人气榜 · 日榜</h2>'
+      + '<span class="note">同花顺热股榜 · 当日累计人气 · 共 ' + arr.length + ' 只</span></div>'
+      + stockRows(arr)
+      + (dayTip ? '<div class="panel hint" style="margin-top:14px">' + dayTip + '</div>' : '')
+      + '</section></div>'
+      + '<div id="seg-week" class="hide">';
 
-    function webRows(arr) {
-      if (!arr.length) return '<div class="panel"><div class="empty">暂无数据</div></div>';
-      return '<div class="entries">' + arr.slice(0, 30).map(function (x, i) {
-        return '<div class="entry' + (i < 3 ? ' top' : '') + '">'
-          + '<div class="rk"><div class="no">' + U.pad2(x.rank) + '</div><div class="src">原榜 ' + (x.srcRank == null ? '—' : '#' + x.srcRank) + '</div></div>'
-          + '<div class="body">'
-          + '<div class="hl">' + (x.url ? '<a href="' + esc(x.url) + '" target="_blank" rel="noopener noreferrer">' + esc(x.title) + '</a>' : esc(x.title))
-          + (x.isTop ? '<span class="tagpill hot">置顶</span>' : '') + '</div>'
-          + '<div class="dek' + (x.desc ? '' : ' empty') + '">' + esc(x.desc || '暂无详情摘要') + '</div>'
-          + '</div>'
-          + '<div class="idx"><div class="val">#' + x.rank + '</div><div class="cap">百度名次</div>'
-          + '<div class="bar"><i style="width:' + Math.max(6, 100 - (x.rank - 1) * 3) + '%"></i></div></div>'
-          + '</div>';
-      }).join('') + '</div>';
-    }
+    var dates = wk.dates || [];
+    var weekTip = wk.entries.length
+      ? ('周榜为自建口径：把最近 ' + wk.days + ' 个数据日（' + esc((dates[0] || '—').slice(5)) + ' — ' + esc((dates[dates.length - 1] || '—').slice(5))
+        + '）的日榜热度逐股累加后排名，覆盖面为各日 Top30 的并集。悬浮或点击任意条目可查看人气趋势。')
+      : '';
+    html += '<section class="sec" id="sec-astk-week">'
+      + '<div class="sec-h"><span class="bar" style="background:var(--gold)"></span><h2>A股人气榜 · 周榜</h2>'
+      + '<span class="note">近 ' + (wk.days || 0) + ' 个数据日累计热度 · 共 ' + wk.entries.length + ' 只</span></div>'
+      + stockRows(wk.entries, '累计热度')
+      + (weekTip ? '<div class="panel hint" style="margin-top:14px">' + weekTip + '</div>' : '')
+      + '</section></div>';
 
-    html += '<div id="seg-web">' + webRows(w.items || []) + '</div>';
-
-    html += '<div class="panel hint" style="margin-top:16px">'
-      + '全网热搜：百度热搜榜，展示名次按榜面顺序编号，另标注百度原始名次。'
-      + '</div>';
     return html;
   }
 
-  /* ========================================== A股盘面 · 人气榜日榜（子 tab）
-     数据不是独立抓取的源，而是「热搜版块日榜」的投影（见 DERIVED / syncDerived），
-     故本版块不单独入库 —— 真源只有一份。 */
-  function renderAstkDay(d, meta) {
-    var arr = (d && d.entries) || [];
-    var tip = arr.length
-      ? ('A股人气榜：同花顺热股榜，展示名次按接口返回顺序 01–' + U.pad2(arr.length) + ' 连续编号；热度指数为接口原始热度值。')
-      : '';
-    return '<section class="sec"><div class="sec-h"><span class="bar" style="background:var(--t3)"></span><h2>A股人气榜 · 日榜</h2>'
-      + '<span class="note">同花顺热股榜 · 当日累计人气 · 共 ' + arr.length + ' 只</span></div>'
-      + stockRows(arr)
-      + (tip ? '<div class="panel hint" style="margin-top:14px">' + tip + '</div>' : '')
-      + '</section>';
+  /* ---------------------------------------------- 人气趋势弹层（悬浮 / 点击固定）
+     曲线数据 = 逐日归档里该股的（热度, 名次）序列，随归档逐日变长。 */
+  function trendSparkSvg(pts) {
+    var P = (pts || []).slice(-12);
+    var W = 306, H = 96, padL = 10, padR = 10, padT = 12, padB = 20;
+    var heats = P.map(function (p) { return p.heat; });
+    var max = Math.max.apply(null, heats), min = Math.min.apply(null, heats);
+    var span = (max - min) || 1;
+    function xAt(i) { return P.length === 1 ? W / 2 : padL + (W - padL - padR) * i / (P.length - 1); }
+    function yAt(v) { return padT + (H - padT - padB) * (1 - (v - min) / span); }
+    var out = ['<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="人气趋势">'];
+    out.push('<line x1="' + padL + '" y1="' + (H - padB) + '" x2="' + (W - padR) + '" y2="' + (H - padB) + '" stroke="var(--line2)" stroke-width="1"/>');
+    if (P.length > 1) {
+      var attr = P.map(function (p, i) { return xAt(i).toFixed(1) + ',' + yAt(p.heat).toFixed(1); }).join(' ');
+      out.push('<polyline points="' + attr + '" fill="none" stroke="var(--gold)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>');
+    }
+    P.forEach(function (p, i) {
+      out.push('<circle cx="' + xAt(i).toFixed(1) + '" cy="' + yAt(p.heat).toFixed(1) + '" r="3" fill="var(--gold)">'
+        + '<title>' + esc(p.d) + ' · 热度 ' + esc(U.fmtHeat(p.heat)) + ' · 第 ' + p.rank + ' 名</title></circle>');
+    });
+    out.push('</svg>');
+    return out.join('');
   }
 
-  /* ======================================================== Tab 4 · 雷达 */
+  var POP_ID = 'heatPop';
+  function popEl() {
+    var el = document.getElementById(POP_ID);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = POP_ID;
+      el.className = 'heatpop hide';
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+  function hideHeatPop() {
+    var el = document.getElementById(POP_ID);
+    if (el && !el.classList.contains('pin')) el.classList.add('hide');
+  }
+  function showHeatPop(entryEl, tdata, pinned) {
+    var code = entryEl.dataset.code;
+    var t = tdata && tdata.trend ? tdata.trend[code] : null;
+    var hl = entryEl.querySelector('.hl');
+    var name = hl && hl.childNodes[0] ? String(hl.childNodes[0].textContent || '').trim() : '';
+    var pop = popEl();
+    var html = '';
+    if (t && t.pts && t.pts.length) {
+      var last = t.pts[t.pts.length - 1];
+      var spanTxt = t.pts.length > 1
+        ? (t.pts[0].d.slice(5) + ' — ' + last.d.slice(5) + ' · ' + t.pts.length + ' 个数据日')
+        : last.d;
+      html = '<div class="hp-h">' + esc(name || t.name) + '<span class="hp-code mono">' + esc(code) + '</span>'
+        + '<span class="hp-span">' + esc(spanTxt) + '</span></div>'
+        + trendSparkSvg(t.pts)
+        + '<div class="hp-f"><span>最新热度 ' + esc(U.fmtHeat(last.heat)) + '</span><b>第 ' + last.rank + ' 名</b></div>';
+    } else {
+      html = '<div class="hp-h">' + esc(name) + '<span class="hp-code mono">' + esc(code) + '</span></div>'
+        + '<div class="hp-empty">暂无趋势数据（随逐日归档积累）</div>';
+    }
+    pop.innerHTML = html;
+    pop.classList.remove('hide');
+    pop.classList.toggle('pin', !!pinned);
+    pop._pinCode = pinned ? code : null;
+    var r = entryEl.getBoundingClientRect();
+    var pw = pop.offsetWidth, ph = pop.offsetHeight;
+    var left = Math.min(Math.max(8, r.left), Math.max(8, window.innerWidth - pw - 8));
+    var top = r.bottom + 8;
+    if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 8);
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+  }
+  function setupHeatPop(root) {
+    if (root._heatPopBound) return;
+    root._heatPopBound = true;
+    root.addEventListener('mouseover', function (e) {
+      var row = e.target && e.target.closest ? e.target.closest('.entry[data-code]') : null;
+      if (!row) return;
+      showHeatPop(row, STATE.tabs.astkday && STATE.tabs.astkday.data, false);
+    });
+    root.addEventListener('mouseleave', hideHeatPop);
+    root.addEventListener('click', function (e) {
+      var row = e.target && e.target.closest ? e.target.closest('.entry[data-code]') : null;
+      if (!row) return;
+      var pop = popEl();
+      if (pop.classList.contains('pin') && pop._pinCode === row.dataset.code) {
+        pop.classList.remove('pin');
+        pop._pinCode = null;
+        pop.classList.add('hide');
+        return;
+      }
+      showHeatPop(row, STATE.tabs.astkday && STATE.tabs.astkday.data, true);
+    });
+    /* 滚动时收起：弹层按打开时的行位置定位，滚动后位置失真，宁可收起也不飘 */
+    window.addEventListener('scroll', function () {
+      var pop = document.getElementById(POP_ID);
+      if (pop && !pop.classList.contains('hide')) {
+        pop.classList.remove('pin');
+        pop._pinCode = null;
+        pop.classList.add('hide');
+      }
+    }, true);
+  }
+  function setupAstkSeg(root) {
+    var bar = root.querySelector('#astkSeg');
+    if (bar && !bar._bound) {
+      bar._bound = true;
+      bar.addEventListener('click', function (e) {
+        var b = e.target.closest ? e.target.closest('button[data-kseg]') : null;
+        if (!b) return;
+        Array.prototype.forEach.call(bar.querySelectorAll('button'), function (x) { x.classList.toggle('on', x === b); });
+        ['day', 'week'].forEach(function (k) {
+          var el = document.getElementById('seg-' + k);
+          if (el) el.classList.toggle('hide', k !== b.dataset.kseg);
+        });
+      });
+    }
+    setupHeatPop(root);
+  }
+
+  /* ========================================== 财经市场 · 风险雷达 */
   function renderRadar(d, meta) {
     var html = '';
     var ov = d.overall;
@@ -527,9 +660,7 @@
   /* ============================================ 财经市场 · 今日要闻
      数字层 = 实时行情（公开行情接口，每次打开刷新）
      叙事层 = 当天财经快讯（华尔街见闻，浏览器可直连，与行情同节奏）
-     两层是**两个独立数据版块**（hk / news），任一方拉取失败另一方照常显示。
-     原「开盘前结构信号」表、版块来源说明横幅均已按用户要求移除 —— 页面只呈现数据本身，
-     来源与更新方式的完整说明另见工作区根目录的《数据来源说明.md》。 */
+     两层是**两个独立数据版块**（hk / news），任一方拉取失败另一方照常显示。 */
   function renderHk(d, meta) {
     var qs = (d.quotes || []).filter(function (x) { return x.price !== null; });
     var all = d.quotes || [];
@@ -563,7 +694,7 @@
     }).filter(function (s) { return s.indexOf('class="cell') >= 0; });
     if (strips.length) html += '<div class="hkstrip">' + strips.join('') + '</div>';
 
-    /* ---- 今日要点（原「开盘前结构信号」表已按用户要求移除） ---- */
+    /* ---- 今日要点 ---- */
     html += '<section class="sec"><div class="sec-h"><span class="bar" style="background:var(--accent)"></span><h2>今日要点</h2>'
       + '<span class="note">' + (news && news.present ? '当天新闻里最新的 ' + (news.latest || []).length + ' 条' : '当天新闻尚未抓取')
       + '</span></div>'
@@ -653,9 +784,10 @@
       + '</details>';
   }
 
-  var RENDER = { aihot: renderAihot, ai7d: renderAi7d, astock: renderAstock, hk: renderHk, hotlist: renderHotlist, astkday: renderAstkDay, radar: renderRadar };
-  /* 一级 tab 顺序：AI 动态 / 财经市场 / 实时热搜（除实时热搜外都是分组 tab，自身不持数据） */
-  var TOPKEYS = ['aidyn', 'market', 'hotlist'];
+  var RENDER = { aihot: renderAihot, ai7d: renderAi7d, astock: renderAstock, hk: renderHk, astkday: renderAstkDay, radar: renderRadar };
+  /* 一级 tab 顺序：AI 动态 / 财经市场（原「实时热搜」一级 tab 已按需求移除；
+     同花顺热股榜数据不再与百度热搜捆绑展示，只作为财经市场内的人气榜子版块） */
+  var TOPKEYS = ['aidyn', 'market'];
   /* 分组 tab → 子 tab，**第一个即默认子 pane**：
        aidyn  「AI 动态」＝ 按时间范围切分同一份 AI 载荷：当日（官方日报精选）与近 7 日（条目流）。
               ai7d 是 aihot 的投影版块（真源 aihot.items7d），两者同源不同视图。
@@ -663,12 +795,13 @@
               注意组内数据节奏不同（要闻＝实时行情 + 实时快讯，盘面＝报告交易日快照），
               靠顶部「数据日期」随子 tab 切换来如实区分。 */
   var GROUP = { aidyn: ['aihot', 'ai7d'], market: ['hk', 'astock', 'radar', 'astkday'] };
-  /* 真正持有数据的版块：渲染顺序与快照校验都用它（页脚曾用它列举入库日期，该行已移除）。
-     news 有独立载荷但没有自己的 pane —— 它是「今日要闻」版块消费的第三份数据。
-     之所以仍按版块处理：这样它能独立进出质量闸门，快讯整段失败时不会连累行情被一起保留。 */
+  /* 真正持有数据的版块：渲染顺序与快照校验都用它。
+     news 有独立载荷但没有自己的 pane —— 它是「今日要闻」版块消费的第三份数据；
+     hotlist 同理（同花顺热股榜 + 逐日归档），由「人气榜 · 日/周榜」投影消费，
+     小时榜则只供风险雷达算热度集中度。两者都能独立进出质量闸门，互不连累。 */
   var DATATABS = ['aihot', 'hk', 'hotlist', 'astock', 'radar', 'news'];
   /* 不单独入库的投影版块：值 = 真源版块。
-     astkday ← hotlist 的 A股人气榜日榜（数据始终只有一份：hotlist.segments.astock.day）；
+     astkday ← hotlist 的 A股人气榜（日榜 + 逐日归档派生周榜/趋势，数据始终只有一份）；
      ai7d    ← aihot 的 7 日条目流（同一份载荷的另一个字段，不复制、不进缓存）。 */
   var DERIVED = { astkday: 'hotlist', ai7d: 'aihot' };
 
@@ -677,12 +810,14 @@
 
   /* 各投影版块怎么从真源取数 —— 新增投影版块时只动这张表，调度逻辑不必改 */
   var PROJECT = {
-    /* 日榜是「当日累计人气」，日期口径跟真源（= 抓取当日），
-       与热搜版块上屏的百度快照日期不同，故单独投影 dataDate。 */
+    /* 日榜 = 当日累计人气（日期口径跟真源 = 抓取当日）；
+       周榜与趋势由真源载荷里的逐日归档（heatArchive，derive 时已并入当天日榜）派生。 */
     astkday: function (d) {
       var day = (d.segments && d.segments.astock && d.segments.astock.day) || [];
-      if (!day.length) return null;
-      return { present: true, entries: day, dataDate: d.dataDate || '' };
+      var arch = d.heatArchive || [];
+      var week = MB.buildWeekList(arch, 5);
+      if (!day.length && !week.entries.length) return null;
+      return { present: true, entries: day, week: week, trend: MB.buildTrendMap(arch), dataDate: d.dataDate || '' };
     },
     /* 近 7 日条目流自带完整结构（items / groups / from / to），整份投出即可 */
     ai7d: function (d) {
@@ -723,7 +858,6 @@
        aihot          ：日报日期（接口给的 report.date）
        ai7d           ：7 日流里最新一条的日期（投影版块）
        hk             ：当天快讯的日期（叙事主干是快讯；行情只是当前读数，不表达内容属于哪天）
-       hotlist        ：百度热搜快照日期（本版块上屏内容只剩百度一段）
        astock / radar ：报告交易日（龙虎榜 / 涨停池按交易日取数）
        astkday        ：同花顺热股榜当日累计（投影版块，日期口径取自真源 hotlist）
       缺失时一律回退到载荷自带的 dataDate，再缺则由调用方显示「—」。 */
@@ -736,7 +870,6 @@
       var nw = STATE.tabs.news && STATE.tabs.news.data;
       return (nw && nw.present && nw.date) || d.dataDate || '';
     }
-    if (k === 'hotlist') return d.baiduDate || d.dataDate || '';
     if (k === 'astock') return d.tradeDate || d.dataDate || '';
     return d.dataDate || '';
   }
@@ -781,7 +914,7 @@
     }
     if (k === 'aihot') { setupAnchors(el); setCardCounts(t.data); }
     if (k === 'ai7d') setupAi7dSeg(el);
-    if (k === 'hotlist') setupSegbar(el);
+    if (k === 'astkday') setupAstkSeg(el);
     if (k === 'hk') setupNewsSeg(el);
   }
 
@@ -817,22 +950,7 @@
     if (el) el.textContent = d.total;
   }
 
-  function setupSegbar(root) {
-    var bar = root.querySelector('#hotSeg');
-    if (!bar) return;
-    bar.addEventListener('click', function (e) {
-      var b = e.target.closest ? e.target.closest('button[data-seg]') : null;
-      if (!b) return;
-      Array.prototype.forEach.call(bar.querySelectorAll('button'), function (x) { x.classList.toggle('on', x === b); });
-      /* 按分段条里实际存在的按钮切换，不再硬编码段名 —— 加段或减段都不必改这里 */
-      Array.prototype.forEach.call(bar.querySelectorAll('button[data-seg]'), function (x) {
-        var el = document.getElementById('seg-' + x.dataset.seg);
-        if (el) el.classList.toggle('hide', x !== b);
-      });
-    });
-  }
-
-  /* 新闻维度筛选：与热搜分段同一交互范式（纯 class 切换） */
+  /* 新闻维度筛选：纯 class 切换 */
   function setupNewsSeg(root) {
     var bar = root.querySelector('#newsSeg');
     if (!bar) return;
@@ -894,7 +1012,6 @@
           el.textContent = (nw && nw.present && nw.total) ? String(nw.total)
             : ((tt.data.quotes || []).filter(function (x) { return x.price !== null; }).length || '—');
         }
-        else if (k === 'hotlist') el.textContent = (tt.data.segments && tt.data.segments.web) ? (tt.data.segments.web.items || []).length : '—';
         else if (k === 'astkday') el.textContent = (tt.data.entries || []).length || '—';
         else el.textContent = tt.data.overall == null ? '—' : tt.data.overall;
       } catch (e) { el.textContent = '—'; }
@@ -927,11 +1044,13 @@
       if (STATE.tabs[k]) return;
       STATE.tabs[k] = { data: snap.tabs[k], src: 'snap', at: snap.builtAt };
     });
+    patchArchive();
     syncDerived();
   }
 
   function applyTabs(tabs, src, at) {
     Object.keys(tabs).forEach(function (k) { STATE.tabs[k] = { data: tabs[k], src: src, at: at }; });
+    patchArchive();
     syncDerived();
   }
 
@@ -953,17 +1072,17 @@
     STATE.busy = true;
     if (btn) { btn.disabled = true; btn.textContent = '拉取中…'; }
     try {
-      var r = await fetchAll();
+      /* 归档先并入页面侧已积累的样本（localStorage + 内置快照），
+         让这次实时拉取的日榜长在完整的时间序列上 */
+      var prevArchive = MB.mergeHeatArchive(
+        (STATE.snapshot && STATE.snapshot.tabs && STATE.snapshot.tabs.hotlist && STATE.snapshot.tabs.hotlist.heatArchive) || [],
+        readLocalArchive()
+      );
+      var r = await fetchAll(prevArchive);
       STATE.lastFail = (r.fails || []).slice();
       var payload = MBRadar.derive(r.raw, r.ctx);
-      /* 浏览器拉不到的段（百度热搜）沿用快照数据 */
-      if (STATE.snapshot && STATE.snapshot.tabs && STATE.snapshot.tabs.hotlist) {
-        var snapHot = STATE.snapshot.tabs.hotlist;
-        if (!payload.tabs.hotlist.segments.web.items.length && snapHot.segments.web.items.length) {
-          payload.tabs.hotlist.segments.web = snapHot.segments.web;
-        }
-        payload.tabs.hotlist.baiduDate = snapHot.baiduDate || '';
-      }
+      /* 页面侧归档立即落盘：即使本次个别版块被质量闸门拦下，趋势样本也不丢 */
+      writeLocalArchive(payload.tabs.hotlist && payload.tabs.hotlist.heatArchive || []);
       /* 非空闸门：空结果一律不覆盖（「更少」的判定在下面用 qualityOf 统一做） */
       function hasData(k, d) {
         if (!d || !d.present) return false;
@@ -972,10 +1091,9 @@
         if (k === 'hk') return (d.quotes || []).some(function (x) { return x.price !== null; });
         if (k === 'news') return (d.total || 0) > 0;
         if (k === 'hotlist') {
-          /* 页面只用得上 web（全网热搜）与 astock.day（投影成 A股人气榜日榜）两段 */
+          /* 页面消费的是 A股人气榜日榜（投影成 日榜/周榜/趋势）；小时榜只供雷达取数 */
           var s = d.segments || {};
-          return !!((s.web && (s.web.items || []).length > 0)
-            || (s.astock && (s.astock.day || []).length > 0));
+          return !!(s.astock && (s.astock.day || []).length > 0);
         }
         return d.overall != null;
       }
@@ -1042,7 +1160,7 @@
     document.getElementById('refreshBtn').addEventListener('click', function () { refresh(true); });
 
     applySnapshot();
-    /* 先用快照把四个版块一次性渲染出来，避免白屏与切换空窗 */
+    /* 先用快照把各版块一次性渲染出来，避免白屏与切换空窗 */
     renderAll();
     updateChrome();
 

@@ -2,7 +2,9 @@
 /**
  * 每日资讯看板数据抓取器（Node，零依赖）
  *   - 按「运行日」幂等：dashboard/data/<YYYY-MM-DD>.json 已存在则跳过网络请求
- *   - 抓全部数据源（含浏览器因 CORS 拉不到的百度热搜）→ 归一化 → 落盘
+ *   - 抓全部数据源 → 归一化 → 落盘
+ *   - 人气榜逐日归档（周榜/趋势的时间序列）沉淀在 data/heat-archive.json，
+ *     随仓库提交：Actions 全新 checkout 靠它续上序列，本地则另有历史快照兜底回填。
  * 用法：
  *   node tools/fetch-sources.js            # 今天，幂等
  *   node tools/fetch-sources.js --force    # 强制重抓
@@ -81,6 +83,33 @@ async function getJson(url, headers) {
 /** 回溯 n 个交易日（跳过周末） */
 const backDates = U.backDates;
 
+/* 人气榜逐日归档的种子：
+   ① data/heat-archive.json（随仓库提交，Actions 全新 checkout 的唯一来源）；
+   ② 本地历史快照 data/<date>.json 里的人气榜日榜（仅本机存在，用来兜底回填）。
+   两者交给 MB.mergeHeatArchive 去重合并 —— 同日冲突时 ①（更"官方"的入库序列）优先。 */
+function loadPrevArchive() {
+  const out = [];
+  const archFile = path.join(DATA_DIR, 'heat-archive.json');
+  if (fs.existsSync(archFile)) {
+    try {
+      const a = JSON.parse(fs.readFileSync(archFile, 'utf8'));
+      if (Array.isArray(a)) out.push(...a);
+    } catch (e) { /* 坏文件则跳过，靠历史快照兜底 */ }
+  }
+  if (fs.existsSync(DATA_DIR)) {
+    fs.readdirSync(DATA_DIR).filter((f) => /^\d{4}-\d{2}-\d{2}\.json$/.test(f)).sort().forEach((f) => {
+      try {
+        const j = JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), 'utf8'));
+        const day = j && j.tabs && j.tabs.hotlist && j.tabs.hotlist.segments
+          && j.tabs.hotlist.segments.astock && j.tabs.hotlist.segments.astock.day;
+        const d = (j && j.fetch && j.fetch.today) || f.replace(/\.json$/, '');
+        if (Array.isArray(day) && day.length) out.push({ date: d, items: day });
+      } catch (e) { /* 单个坏快照不影响整体 */ }
+    });
+  }
+  return out;
+}
+
 (async () => {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const target = path.join(DATA_DIR, TODAY + '.json');
@@ -101,8 +130,11 @@ const backDates = U.backDates;
     baselineDates: [],
     baselineDate8: '',
     secid: '1.000001',
-    builtAt: U.nowIso()
+    builtAt: U.nowIso(),
+    prevArchive: MB.mergeHeatArchive([], loadPrevArchive())
   };
+  say('  人气榜归档种子：' + ctx.prevArchive.length + ' 个数据日'
+    + (ctx.prevArchive.length ? '（' + ctx.prevArchive[0].date + ' — ' + ctx.prevArchive[ctx.prevArchive.length - 1].date + '）' : ''));
 
   const raw = {};
   const fails = [];
@@ -182,11 +214,18 @@ const backDates = U.backDates;
   /* A股两个版块被沿用后，雷达必须按**最终的** astock / hotlist 重算，否则分数与所展示的
      盘面数据对不上（曾出现「展示旧盘面 + 新雷达分」这种自相矛盾的组合）。 */
   if (carried.some((c) => /^astock|^hotlist/.test(c))) {
-    const base = (payload.tabs.astock && payload.tabs.astock.baseline) || MB.collectBaseline(raw);
-    payload.tabs.radar = Radar.computeRadar(payload.tabs.astock, payload.tabs.hotlist, base);
+    const base2 = (payload.tabs.astock && payload.tabs.astock.baseline) || MB.collectBaseline(raw);
+    payload.tabs.radar = Radar.computeRadar(payload.tabs.astock, payload.tabs.hotlist, base2);
     carried.push('radar（随 astock/hotlist 重算）');
   }
   payload.fetch.carried = carried;
+
+  /* 人气榜逐日归档落盘（今天的日榜已由 derive 并入）。放在兜底之后：
+     若 hotlist 被沿用为旧版快照，写进去的就是旧版那份归档 —— 与页面实际展示的口径一致。 */
+  const archOut = payload.tabs.hotlist && payload.tabs.hotlist.heatArchive;
+  if (archOut && archOut.length) {
+    fs.writeFileSync(path.join(DATA_DIR, 'heat-archive.json'), JSON.stringify(archOut), 'utf8');
+  }
 
   fs.writeFileSync(target, JSON.stringify(payload, null, 1), 'utf8');
 
@@ -200,9 +239,11 @@ const backDates = U.backDates;
   say('  财经市场·市场情绪 tradeDate=' + payload.tabs.astock.tradeDate
     + '  龙虎榜=' + payload.tabs.astock.lhb.count + '家  涨停=' + payload.tabs.astock.breadth.limitUp
     + '  封板率=' + payload.tabs.astock.breadth.limitUpRate + '%  行业=' + payload.tabs.astock.industries.count);
-  say('  实时热搜     全网热搜=' + payload.tabs.hotlist.segments.web.items.length
-    + '  人气榜日榜=' + payload.tabs.hotlist.segments.astock.day.length
-    + '  小时榜（不上屏，供雷达算热度集中度）=' + payload.tabs.hotlist.segments.astock.hour.length);
+  const hotSeg = payload.tabs.hotlist.segments.astock;
+  const hotArch = payload.tabs.hotlist.heatArchive || [];
+  const hotWeek = MB.buildWeekList(hotArch, 5);
+  say('  人气榜       日榜=' + hotSeg.day.length + '  小时榜（不上屏，供雷达算热度集中度）=' + hotSeg.hour.length
+    + '  归档=' + hotArch.length + ' 个数据日  周榜=' + hotWeek.entries.length + ' 只（近 ' + hotWeek.days + ' 日累计）');
   say('  财经市场·风险雷达 总体=' + payload.tabs.radar.overall + '（' + payload.tabs.radar.level + '）  '
     + payload.tabs.radar.metrics.map((m) => m.label + ':' + m.value).join(' '));
   say('  财经市场·今日要闻   ' + (payload.tabs.hk.quotes || []).filter((q) => q.price !== null).length + '/' + (payload.tabs.hk.quotes || []).length
@@ -210,6 +251,7 @@ const backDates = U.backDates;
   say('  财经市场·当天快讯   ' + (payload.tabs.news.total || 0) + ' 条 / ' + (payload.tabs.news.date || '—')
     + '  ' + (payload.tabs.news.groups || []).map((g) => g.label + ':' + g.count).join(' '));
   say('  基线         ' + payload.tabs.astock.baseline.map((x) => x.date.slice(5) + '=' + x.count).join(' '));
+  if (archOut && archOut.length) say('  归档落盘     data/heat-archive.json  ' + archOut.length + ' 个数据日');
   if (fails.length) { say('  失败项 ' + fails.length + ' 个：'); fails.forEach((f) => say('    - ' + f)); }
   else say('  失败项 0 个');
   if (carried.length) { say('  兜底沿用上一份快照：'); carried.forEach((c) => say('    - ' + c)); }

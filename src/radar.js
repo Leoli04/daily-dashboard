@@ -203,7 +203,10 @@
 
     var hotDate = ctx.today;
     hotlist.dataDate = hotDate;
-    hotlist.baiduDate = ctx.today;
+    /* 人气榜逐日归档：构建侧 ctx.prevArchive 由抓取器装入（data/heat-archive.json + 本地历史快照），
+       页面实时侧由 app.js 装入（localStorage + 内置快照）—— 两边共用 lib 的同一套合并口径，
+       今天这行日榜总是追加在归档最前（同日去重、空日不收）。 */
+    hotlist.heatArchive = MB.mergeHeatArchive(ctx.prevArchive || [], [{ date: hotDate, items: hotlist.segments.astock.day }]);
 
     hk.dataDate = ctx.today;
     hk.snapshotAt = ctx.snapshotAt || '';

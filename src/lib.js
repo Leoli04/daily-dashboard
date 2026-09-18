@@ -276,11 +276,6 @@
     { id: 'hotDay', kind: 'browser', tab: 'hotlist',
       url: function () { return 'https://eq.10jqka.com.cn/open/api/hot_list/v1/hot_stock/a/day/data.txt'; } },
 
-    /* 百度热搜：无 CORS 头，浏览器不可直连，只能由 Node 抓取后进快照 */
-    { id: 'baiduHot', kind: 'node', tab: 'hotlist',
-      headers: { Referer: 'https://top.baidu.com/board?tab=realtime' },
-      url: function () { return 'https://top.baidu.com/api/board?platform=wise&tab=realtime'; } },
-
     /* 港股开盘：恒指 / 恒科 / 国企 / 黄金 / 双油 / 美元 / 美债 一次取全 */
     { id: 'hkQuotes', kind: 'browser', tab: 'hk',
       url: function () {
@@ -361,9 +356,9 @@
     },
     hotlist: function (t) {
       var s = t.segments || {};
-      return ((s.web && s.web.items.length) || 0)
-        + ((s.astock && s.astock.day.length) || 0)
-        + ((s.astock && s.astock.hour.length) || 0);
+      var a = (s.astock && s.astock.day.length) || 0;
+      var h = (s.astock && s.astock.hour.length) || 0;
+      return a + h;
     },
     hk: function (t) {
       return (t.quotes || []).filter(function (q) { return q.price !== null; }).length;
@@ -708,7 +703,75 @@
     return out;
   }
 
-  /* ---------------------------------------------------- 热搜榜 归一化 */
+  /* -------------------------------------------- 人气榜逐日归档（周榜 / 趋势的底座）
+     周榜与个股人气趋势没有现成端点（同花顺 eq/fuyao、东财 emappdata 全系探测过，
+     均无 week 榜；东财 getHisList 只有单股排名历史且无 CORS 头），故由「每日日榜 Top30」
+     滚动归档自建：每天一行（代码/名称/热度/名次），保留最近 HOT_ARCHIVE_MAX 个数据日。
+     归档随 data/heat-archive.json 入库（仓库内提交，Actions 全新 checkout 也能续用时间序列），
+     页面侧再把内置快照归档并入 localStorage 逐日累积 —— 看得越勤，周榜与趋势越全。 */
+  var HOT_ARCHIVE_MAX = 15;
+
+  /* 日榜条目 → 归档条目（只留周榜与趋势要用的四个字段，其余不上屏字段不进归档） */
+  function slimDayItems(items) {
+    return (items || []).slice(0, 30).map(function (x) {
+      return { code: x.code || '', name: x.name || '', heat: x.heat || 0, rank: x.rank || 0 };
+    }).filter(function (x) { return x.code; });
+  }
+
+  /* 按 date 去重合并（added 同日优先），按日期升序，超出上限裁掉最旧的。
+     空日（抓取失败时 day 为空）不进归档，避免拿空行污染时间序列。 */
+  function mergeHeatArchive(prev, added) {
+    var seen = {}, out = [];
+    (added || []).concat(prev || []).forEach(function (day) {
+      var d = day && day.date;
+      var items = slimDayItems(day && day.items);
+      if (!d || !items.length || seen[d]) return;
+      seen[d] = 1;
+      out.push({ date: d, items: items });
+    });
+    out.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    return out.length > HOT_ARCHIVE_MAX ? out.slice(out.length - HOT_ARCHIVE_MAX) : out;
+  }
+
+  /* 周榜 = 最近 windowDays 个数据日的累计热度排名（覆盖面 = 每日 Top30 的并集）。
+     这是自建口径而非官方周榜，上屏时必须带「近 N 个数据日累计」字样如实标注。 */
+  function buildWeekList(archive, windowDays) {
+    var days = (archive || []).slice(-Math.max(1, windowDays || 5));
+    var by = {}, order = [];
+    days.forEach(function (day) {
+      (day.items || []).forEach(function (x) {
+        var r = by[x.code];
+        if (!r) { r = by[x.code] = { code: x.code, name: x.name, heat: 0, days: 0 }; order.push(r); }
+        if (x.name) r.name = x.name;
+        r.heat += x.heat || 0;
+        r.days += 1;
+      });
+    });
+    var entries = order.map(function (x) {
+      return {
+        code: x.code, name: x.name, heat: x.heat, days: x.days,
+        heatTxt: fmtHeat(x.heat),
+        daysTxt: days.length > 1 ? ('近 ' + days.length + ' 个数据日中 ' + x.days + ' 日在榜') : ''
+      };
+    }).sort(function (a, b) { return b.heat - a.heat; }).slice(0, 30);
+    entries.forEach(function (x, i) { x.rank = i + 1; });
+    return { entries: entries, days: days.length, dates: days.map(function (d) { return d.date; }) };
+  }
+
+  /* 趋势 = 个股逐日（热度, 名次）序列，代码 → 序列 的映射，供悬浮/点击弹层用 */
+  function buildTrendMap(archive) {
+    var by = {};
+    (archive || []).forEach(function (day) {
+      (day.items || []).forEach(function (x) {
+        var t = by[x.code] = by[x.code] || { code: x.code, name: x.name || '', pts: [] };
+        t.pts.push({ d: day.date, heat: x.heat || 0, rank: x.rank || 0 });
+        if (x.name) t.name = x.name;
+      });
+    });
+    return by;
+  }
+
+  /* ---------------------------------------------------- 人气榜 归一化 */
   function normalizeHotlist(raw) {
     var hour = (raw.hotHour && raw.hotHour.data && raw.hotHour.data.stock_list) || [];
     var day = (raw.hotDay && raw.hotDay.data && raw.hotDay.data.stock_list) || [];
@@ -722,33 +785,12 @@
         };
       });
     }
-    var web = [];
-    try {
-      var cards = (raw.baiduHot && raw.baiduHot.data && raw.baiduHot.data.cards) || [];
-      var inner = cards[0] && cards[0].content && cards[0].content[0] && cards[0].content[0].content;
-      if (inner && inner.length) {
-        /* 展示名次按数组顺序连续编号；百度原始 index 另列为 srcRank（置顶项无 index） */
-        web = inner.filter(function (x) { return x && x.word; }).slice(0, 30).map(function (x, i) {
-          var sr = num(x.index);
-          return {
-            rank: i + 1,
-            srcRank: sr === null ? null : sr,
-            title: x.word,
-            desc: trimSummary(x.desc || '', 46),
-            heat: num(x.hotScore),
-            isTop: !!x.isTop,
-            url: x.url || ''
-          };
-        });
-      }
-    } catch (e) { web = []; }
     return {
-      present: hour.length > 0 || day.length > 0 || web.length > 0,
+      present: hour.length > 0 || day.length > 0,
       dataDate: '',
-      sourceLabel: '同花顺人气榜 · 百度热搜',
+      sourceLabel: '同花顺人气榜',
       segments: {
-        astock: { label: 'A股人气榜', sub: '同花顺热股榜 · 小时榜 / 日榜', kind: 'live', hour: mapStocks(hour), day: mapStocks(day) },
-        web: { label: '全网热搜', sub: '百度热搜实时榜', kind: 'snapshot', items: web }
+        astock: { label: 'A股人气榜', sub: '同花顺热股榜 · 小时榜 / 日榜', kind: 'live', hour: mapStocks(hour), day: mapStocks(day) }
       }
     };
   }
@@ -892,7 +934,7 @@
   }
 
   return {
-    VERSION: '1.0.0',
+    VERSION: '1.1.0',
     SOURCES: SOURCES, CANON: CANON,
     byId: byId, planFor: planFor, buildTasks: buildTasks,
     altUrls: altUrls, HOST_ALTS: HOST_ALTS,
@@ -900,6 +942,8 @@
     qualityOf: qualityOf, TAB_QUALITY: TAB_QUALITY,
     normalizeAstock: normalizeAstock,
     normalizeHotlist: normalizeHotlist, normalizeHk: normalizeHk,
+    mergeHeatArchive: mergeHeatArchive, buildWeekList: buildWeekList, buildTrendMap: buildTrendMap,
+    HOT_ARCHIVE_MAX: HOT_ARCHIVE_MAX,
     normalizeLiveNews: normalizeLiveNews, NEWS_CH: NEWS_CH,
     collectBaseline: collectBaseline, HK_SECIDS: HK_SECIDS,
     pickTradeDate: pickTradeDate,

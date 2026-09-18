@@ -70,7 +70,7 @@ const html = [
   '<meta charset="UTF-8">',
   '<meta name="viewport" content="width=device-width, initial-scale=1">',
   '<meta name="color-scheme" content="dark">',
-  '<title>每日资讯看板 · AI日报 / AI动态 / 财经市场 / 实时热搜</title>',
+  '<title>每日资讯看板 · AI日报 / AI动态 / 财经市场</title>',
   '<style>' + css + '</style>',
   '</head>',
   '<body>',
@@ -100,6 +100,8 @@ const snapNews = (snapshot.tabs && snapshot.tabs.news) || {};
 log.push('  news          ' + (snapNews.total
   ? snapNews.total + ' 条 / ' + snapNews.date + ' · ' + (snapNews.groups || []).length + ' 个频道（随快照入库）'
   : '快照内无快讯（页面将显示空态）'));
+const snapArch = (snapshot.tabs && snapshot.tabs.hotlist && snapshot.tabs.hotlist.heatArchive) || [];
+log.push('  heatArchive   ' + snapArch.length + ' 个数据日（周榜/趋势的时间序列）');
 log.push('  edition       ' + edition);
 log.push('  css/js 字符    ' + css.length + ' / ' + (lib.length + radar.length + app.length));
 log.push('  外部资源检查   <link>=' + (html.match(/<link\b/gi) || []).length
@@ -108,14 +110,15 @@ log.push('  外部资源检查   <link>=' + (html.match(/<link\b/gi) || []).leng
 
 const checks = [];
 /* 一级容器（pane-aidyn / pane-market 是两个分组 tab，自身不持数据）与持数据的 pane 分开列 */
-const TOP_PANES = ['pane-aidyn', 'pane-market', 'pane-hotlist'];
-const DATA_PANES = ['pane-aihot', 'pane-ai7d', 'pane-hk', 'pane-hotlist', 'pane-astock', 'pane-radar', 'pane-astkday'];
+const TOP_PANES = ['pane-aidyn', 'pane-market'];
+const DATA_PANES = ['pane-aihot', 'pane-ai7d', 'pane-hk', 'pane-astock', 'pane-radar', 'pane-astkday'];
 const ALL_PANES = TOP_PANES.concat(DATA_PANES.filter((k) => TOP_PANES.indexOf(k) < 0));
 /* 不单独入库的投影版块：由真源在渲染前投出
-   （astkday ← hotlist 的 A股人气榜日榜；ai7d ← aihot 的 7 日条目流） */
+   （astkday ← hotlist 的 A股人气榜；ai7d ← aihot 的 7 日条目流） */
 const DERIVED_TABS = ['astkday', 'ai7d'];
-/* 有独立数据载荷但没有自己 pane 的版块 —— news 由「财经市场 · 今日要闻」消费 */
-const PANELESS_TABS = ['news'];
+/* 有独立数据载荷但没有自己 pane 的版块 —— news 由「今日要闻」消费，
+   hotlist（同花顺热股榜 + 逐日归档）由「人气榜 · 日/周榜」投影消费、小时榜供雷达取数 */
+const PANELESS_TABS = ['news', 'hotlist'];
 checks.push(['快照可解析', (() => { try { const s = html.split('<script id="snapshot" type="application/json">')[1].split('</script>')[0]; JSON.parse(s); return true; } catch (e) { return 'FAIL ' + e.message; } })()]);
 checks.push(['无 </script> 截断风险', snapshot ? html.indexOf('</script>', html.indexOf('type="application/json"')) > 0 : false]);
 /* 快讯是构建快照的一部分（断网降级时「全部要闻」还得有内容）。
@@ -150,11 +153,16 @@ checks.push(['快讯源为浏览器可直连（不再依赖构建时凭证）', 
   return bad.length ? 'FAIL ' + bad.join('；') : true;
 })()]);
 checks.push([ALL_PANES.length + ' 个 pane 容器存在', ALL_PANES.every((k) => html.indexOf('id="' + k + '"') >= 0)]);
-/* 一级导航：三个 tab（AI 动态 / 财经市场 都是分组 tab，自身不持数据） */
-checks.push(['一级 tab 顺序 = aidyn → market → hotlist（共 3 个）', (() => {
+/* 一级导航：两个 tab（AI 动态 / 财经市场 都是分组 tab，自身不持数据）。
+   原「实时热搜」一级 tab 已按需求移除 —— 判据必须同时确认它不再以任何形式出现。 */
+checks.push(['一级 tab 顺序 = aidyn → market（实时热搜已移除，共 2 个）', (() => {
   const got = (shell.match(/data-pane="([a-z0-9]+)"/g) || []).map((s) => s.replace(/.*"([a-z0-9]+)"/, '$1'));
-  const want = ['aidyn', 'market', 'hotlist'];
-  return JSON.stringify(got) === JSON.stringify(want) ? true : 'FAIL ' + JSON.stringify(got);
+  const bad = [];
+  if (JSON.stringify(got) !== JSON.stringify(['aidyn', 'market'])) bad.push('顺序 ' + JSON.stringify(got));
+  if (shell.indexOf('hotlist') >= 0) bad.push('shell.html 仍含 hotlist 字样');
+  if (html.indexOf('data-pane="hotlist"') >= 0) bad.push('产物仍含热搜一级 tab');
+  if (html.indexOf('id="pane-hotlist"') >= 0) bad.push('产物仍含热搜 pane 容器');
+  return bad.length ? 'FAIL ' + bad.join('；') : true;
 })()]);
 /* 分组 tab 的子 tab 归属：**按 data-group 逐组解析**，比扫一遍全局 data-sub 更能锁住「谁属于谁」——
    两个分组 tab 并存时，全局扫描只能得到一条扁平序列，子 tab 挂错了组也看不出来。 */
@@ -243,12 +251,13 @@ checks.push(['单条版块卡片左对齐（无 .cards.single 居中）', (() =>
 })()]);
 checks.push(['UMD 双端导出存在', html.indexOf('root.MB = api') >= 0 && html.indexOf('root.MBRadar = api') >= 0]);
 /* 每个 tab 容器在 snapshot 里都有对应载荷，避免「有壳无数据」静默失败。
-   投影版块不单独入库，改判其真源（人气榜日榜 ← 热搜版块的日榜）非空。 */
+   投影版块不单独入库，改判其真源（人气榜 ← 热搜数据版块的日榜）非空。
+   hotlist 与 news 一样是有载荷无 pane 的版块，由 PANELESS_TABS 覆盖。 */
 checks.push(['快照含全部数据版块载荷（投影版块除外）', DATA_PANES.map((k) => k.replace('pane-', ''))
   .concat(PANELESS_TABS)
   .filter((k) => DERIVED_TABS.indexOf(k) < 0)
   .every((k) => snapshot.tabs && snapshot.tabs[k] !== undefined)]);
-checks.push(['投影版块的真源非空（热搜版块的 A股人气榜日榜）', (() => {
+checks.push(['投影版块的真源非空（人气榜日榜）', (() => {
   const seg = snapshot.tabs.hotlist && snapshot.tabs.hotlist.segments && snapshot.tabs.hotlist.segments.astock;
   const n = seg && Array.isArray(seg.day) ? seg.day.length : 0;
   return n > 0 ? true : 'FAIL 日榜条数 ' + n + '（应为投影源）';
@@ -304,11 +313,9 @@ checks.push(['顶部并置「数据日期」与「更新于」', (() => {
 checks.push(['数据日期逐版块判定且徽标与顶部同源', (() => {
   const bad = [];
   if (app.indexOf('function dataDateOf(') < 0) bad.push('app.js 缺 dataDateOf');
-  ['aihot', 'ai7d', 'hk', 'hotlist', 'astock'].forEach((k) => {
+  ['aihot', 'ai7d', 'hk', 'astock'].forEach((k) => {
     if (app.indexOf("k === '" + k + "'") < 0) bad.push('dataDateOf 未覆盖 ' + k);
   });
-  /* 横幅删除后，热搜版块的快照日期只能靠 dataDateOf 的 baiduDate 分支体现 */
-  if (app.indexOf('d.baiduDate || d.dataDate') < 0) bad.push('热搜数据日期未取百度快照日期');
   /* 徽标必须与顶部同源：同一个 dd 变量同时写两处，不得各算各的 */
   if (!/badge\.textContent\s*=\s*dd\s*\|\|\s*'—'/.test(app)) bad.push('徽标未与顶部数据日期同源');
   if (!/getElementById\('dataDate'\)\.textContent\s*=\s*dd\s*\|\|\s*'—'/.test(app)) bad.push('顶部数据日期未由 dd 写入');
@@ -372,7 +379,7 @@ checks.push(['页脚不再暴露本地快照清单与数据目录', (() => {
 checks.push(['页面无版块来源说明横幅与零散来源句', (() => {
   const bad = [];
   ['东方财富公开行情接口', '不返回 CORS 头', '浏览器无法直连', '页面无法自行拉取',
-   '与上方实时行情属不同更新节奏', '百度热搜需由本地脚本抓取'].forEach((w) => {
+   '与上方实时行情属不同更新节奏'].forEach((w) => {
     if (html.indexOf(w) >= 0) bad.push('产物含「' + w + '」');
   });
   /* 两处横幅的渲染代码必须整段移除 */
@@ -382,27 +389,46 @@ checks.push(['页面无版块来源说明横幅与零散来源句', (() => {
   if (/\.banner\.t5/.test(css)) bad.push('styles.css 仍有 .banner.t5 死规则');
   return bad.length ? 'FAIL ' + bad.join('；') : true;
 })()]);
-/* 热搜版块瘦身：A股人气榜的「小时榜」不再上屏，日榜归到「A股盘面」。
-   判据只看 app.js —— lib.js 的段落描述与快照 JSON 仍带该数据，因为小时榜要留给
-   风险雷达算热度集中度，删的是「上屏」而不是「数据」。 */
-checks.push(['热搜版块不再上屏 A股人气榜小时榜', (() => {
+/* 热搜一级 tab 移除后，百度热搜这条「浏览器拿不到的源」随之失去唯一消费方 ——
+   源定义、归一化解析与 web 段全部退役，是本轮的根因清理（不是只藏掉 tab）。 */
+checks.push(['百度热搜已整体移除（源 / 解析 / web 段全消失）', (() => {
   const bad = [];
-  /* 只扫被删的完整按钮文案，不扫「小时榜」单字 —— 注释里叙述「哪条不再上屏」是允许的 */
-  if (app.indexOf('A股人气榜 · 小时榜') >= 0) bad.push('app.js 仍含被删的分段按钮文案');
-  if (app.indexOf('id="seg-hour"') >= 0) bad.push('app.js 仍渲染 seg-hour 段');
-  if (app.indexOf("data-seg=\"hour\"") >= 0) bad.push('app.js 仍有小时榜分段按钮');
+  if (lib.indexOf('top.baidu.com') >= 0) bad.push('lib.js 仍有百度热搜源');
+  if (lib.indexOf('baiduHot') >= 0) bad.push('lib.js 仍有 baiduHot 源定义');
+  if (lib.indexOf('hotScore') >= 0) bad.push('lib.js 仍有百度榜解析代码');
+  if (app.indexOf('renderHotlist') >= 0) bad.push('app.js 仍渲染热搜版块');
+  if (app.indexOf('#hotSeg') >= 0) bad.push('app.js 仍有热搜分段条');
+  if (app.indexOf('segments.web') >= 0) bad.push('app.js 仍消费 web 段');
+  if (lib.indexOf('segments.web') >= 0) bad.push('lib.js 仍产出 web 段');
   return bad.length ? 'FAIL ' + bad.join('；') : true;
 })()]);
 /* 日榜归属：财经市场内的第四个子 tab，且由 hotlist 投影而来（真源只有一份，不单独入库） */
 checks.push(['人气榜日榜在财经市场内且为投影版块', (() => {
   const bad = [];
-  if (app.indexOf('id="seg-day"') >= 0) bad.push('app.js 仍把日榜渲染在热搜版块内');
   if (app.indexOf('astkday: renderAstkDay') < 0) bad.push('app.js 未注册 astkday 渲染器');
   if (!/DERIVED\s*=\s*\{[^}]*astkday\s*:\s*'hotlist'/.test(app)) bad.push('app.js 缺 astkday ← hotlist 投影声明');
   if (app.indexOf('syncDerived()') < 0) bad.push('app.js 未在数据换新后同步投影版块');
   if (app.indexOf('if (DERIVED[k]) return;') < 0) bad.push('缓存层未排除投影版块（会写出第二份真源）');
   if (html.indexOf('data-sub="astkday"') < 0) bad.push('shell.html 缺 astkday 子 tab 按钮');
   if (html.indexOf('id="pane-astkday"') < 0) bad.push('shell.html 缺 astkday 子 pane');
+  return bad.length ? 'FAIL ' + bad.join('；') : true;
+})()]);
+/* 周榜与人气趋势：官方渠道没有周榜端点（同花顺/东财全系数探测确认），
+   由逐日归档（heatArchive）自建 —— 周榜取最近 5 个数据日累计热度排名，
+   趋势为个股逐日（热度,名次）序列，悬浮/点击条目以弹层展示。 */
+checks.push(['人气榜含周榜与人气趋势弹层', (() => {
+  const bad = [];
+  if (app.indexOf('id="astkSeg"') < 0) bad.push('app.js 缺日/周榜分段条');
+  if (app.indexOf('data-kseg="week"') < 0) bad.push('app.js 缺周榜分段按钮');
+  if (app.indexOf('id="seg-week"') < 0) bad.push('app.js 缺周榜段容器');
+  if (app.indexOf('MB.buildWeekList') < 0) bad.push('app.js 未调 buildWeekList 派生周榜');
+  if (app.indexOf('MB.buildTrendMap') < 0) bad.push('app.js 未调 buildTrendMap 派生趋势');
+  if (lib.indexOf('function buildWeekList(') < 0) bad.push('lib.js 缺 buildWeekList');
+  if (lib.indexOf('function mergeHeatArchive(') < 0) bad.push('lib.js 缺 mergeHeatArchive');
+  if (app.indexOf('setupHeatPop') < 0 || app.indexOf('trendSparkSvg') < 0) bad.push('app.js 缺趋势弹层');
+  if (app.indexOf('data-code=') < 0) bad.push('条目行缺 data-code（弹层定位不了个股）');
+  if (radar.indexOf('heatArchive') < 0) bad.push('radar.js 未把归档并入热搜载荷');
+  if (css.indexOf('.heatpop') < 0) bad.push('styles.css 缺弹层样式');
   return bad.length ? 'FAIL ' + bad.join('；') : true;
 })()]);
 /* 近 7 日 AI 条目流：与当日日报出自同一提供方的另一端点（window=7d，实测 71 条）。

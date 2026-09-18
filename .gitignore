@@ -1,7 +1,10 @@
 # ---- 快照 JSON ----
 # 构建时在工作区全新抓取，不入库：否则仓库会按每天数百 KB 线性膨胀。
 # data/ 目录本身不需要保留，tools/fetch-sources.js 用 mkdirSync(recursive) 自动创建。
+# 例外：heat-archive.json 是人气榜逐日归档（每天仅 ~30 行，体积极小），
+# 必须随仓库提交 —— Actions 全新 checkout 靠它续上周榜与趋势的时间序列。
 data/*.json
+!data/heat-archive.json
 
 # ---- 工具运行日志 ----
 # 每次运行都变，入库只会产生噪音。
