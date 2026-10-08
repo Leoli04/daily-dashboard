@@ -35,8 +35,12 @@ function say(s) { log.push(s); }
      · 与请求头无关 —— 加 Connection: close 后仍 1/5 失败；
      · 与连接复用无关 —— 失败簇内连续 4 次重连仍被重置（实测 hkQuotes 退避 4.2s 未救回）。
    即服务端行为，客户端无确定性解法，只能靠重试跨过失败窗口：实测失败簇可持续约 1 秒，
-   退避总跨度 ~15s 足以覆盖。只重试**传输层**故障；HTTP 状态码与「响应不是 JSON」
-   这类语义错误重试无意义，直接抛出。 */
+   退避总跨度 ~15s 足以覆盖。只重试**传输层**故障与 **5xx 响应**；4xx 与「200 但不是 JSON」
+   属参数/语义问题，重试无意义，直接抛出。
+   5xx 为什么算可重试（2026-10-08 教训）：GitHub 境外 runner 上东财 CDN 会整段返回
+   502 Bad Gateway（HTML），持续几分钟到几小时 —— 本机从 2026-09-28 起连续 8 次定时构建
+   全部死在这里。它本质是「服务端拒绝这一路」，退避跨窗口 + 换同族域名（push2delay）正是解法，
+   按「语义错误立即抛」处理会让抓取在境外环境永久不可用。 */
 const RETRY_BACKOFF = [0, 800, 2000, 4000, 8000];
 
 function isTransportError(e) {
@@ -54,10 +58,14 @@ async function getJsonOnce(url, headers) {
       const buf = Buffer.from(await res.arrayBuffer());
       const txt = buf.toString('utf8');
       try { return JSON.parse(txt); }
-      catch (e) { throw new Error('非 JSON 响应（' + res.status + '）：' + txt.slice(0, 120)); }
+      catch (e) {
+        const err = new Error('非 JSON 响应（' + res.status + '）：' + txt.slice(0, 120));
+        if (res.status >= 500) err.http5xx = true;   /* 服务端故障：值得退避重试与换域名 */
+        throw err;
+      }
     } catch (e) {
       lastErr = e;
-      if (!isTransportError(e)) throw e;
+      if (!isTransportError(e) && !e.http5xx) throw e;
       say('  retry ' + (i + 1) + '/' + RETRY_BACKOFF.length + '  ' + String(url).slice(0, 70) + '  ← ' + e.message);
     }
   }
@@ -73,7 +81,7 @@ async function getJson(url, headers) {
     try { return await getJsonOnce(cands[i], headers); }
     catch (e) {
       lastErr = e;
-      if (!isTransportError(e)) throw e;          /* 语义错误换域名无意义 */
+      if (!isTransportError(e) && !e.http5xx) throw e;   /* 语义错误换域名无意义 */
       if (i + 1 < cands.length) say('  host-fallback → ' + String(cands[i + 1].replace(/^https?:\/\//, '')).slice(0, 68));
     }
   }

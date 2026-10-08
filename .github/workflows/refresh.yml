@@ -4,8 +4,8 @@ name: refresh-dashboard
 #
 # 这个 workflow 负责什么（以及不负责什么）：
 #   页面打开时会由**浏览器直连 19 个数据源实时刷新**，所以「数据新不新」不靠这里。
-#   这里刷新的是**内置快照** —— 断网 / 接口全挂时的兜底，以及「百度热搜」这类
-#   浏览器拿不到的源的唯一来源（该源无 CORS 头，只能由 Node 抓）。
+#   这里刷新的是**内置快照** —— 断网 / 接口全挂时的兜底，以及人气榜逐日归档
+#   （heat-archive.json 随仓库提交，Actions 每天并入当日日榜，周榜/趋势靠它生长）。
 #
 # 两个必须知道的坑：
 #   1) 时区。工具用运行时本地时区判定「今天」；runner 是 UTC，北京时间 00:00–08:00 之间
@@ -15,11 +15,12 @@ name: refresh-dashboard
 
 on:
   # 推送到 main 即部署一次：既让首次上线不用等定时任务，也让日后的改动自动生效。
-  # paths-ignore 排除保活提交，否则每月保活会白跑一趟完整构建。
+  # paths-ignore 排除保活提交与失败诊断目录，否则保活/诊断提交会各自再触发一趟完整构建。
   push:
     branches: [main]
     paths-ignore:
       - '.github/keepalive.txt'
+      - 'debug/**'
   schedule:
     # cron 一律按 UTC 写，下面两条已换算成北京时间：
     - cron: '30 0,12 * * *' # 北京时间 08:30 与 20:30，各跑一次
@@ -61,12 +62,28 @@ jobs:
               echo "抓取 + 闸门通过（第 ${i} 次）"
               exit 0
             fi
-            echo "第 ${i} 次未通过，清掉本地快照后重试"
-            rm -f data/*.json
+            echo "第 ${i} 次未通过，清掉日期快照后重试"
+            # 只删日期快照（2026-xx-xx.json），保留 data/heat-archive.json ——
+            # 人气榜逐日归档也匹配 *.json，曾把它一起删掉导致 CI 里周榜/趋势退化成单日。
+            rm -f data/2*.json
             sleep 20
           done
           echo "三次都未通过，放弃发布"
           exit 1
+
+      - name: 失败诊断（把抓取/构建日志提交进仓库，供远程读取）
+        if: failure()
+        run: |
+          set -euo pipefail
+          mkdir -p debug
+          cp -f tools/_last-run.txt debug/ 2>/dev/null || true
+          cp -f tools/_last-build.txt debug/ 2>/dev/null || true
+          if [ -d data ] && ls data/2*.json >/dev/null 2>&1; then cp -f data/2*.json debug/; fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add debug
+          git diff --cached --quiet || git commit -m "debug: CI 失败诊断日志（自动提交）"
+          git push
 
       - name: 构建单文件产物
         run: |
